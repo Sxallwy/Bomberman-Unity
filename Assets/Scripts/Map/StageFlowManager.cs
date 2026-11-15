@@ -1,0 +1,155 @@
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using System.Collections;
+
+public class StageFlowManager : MonoBehaviour
+{
+    public static StageFlowManager Instance { get; private set; }
+
+    [SerializeField] private float delayBeforeLoad = 1.5f;
+    [SerializeField] private float delayAfterLoad = 0.5f;
+    [SerializeField] private FadeController fadeController;
+    [SerializeField] private int mainMenuBuildIndex = 0;
+    [SerializeField] private int winSceneBuildIndex = 5;
+
+    public bool IsTransitioning { get; private set; } = false;
+
+    private bool pendingFadeIn = false;
+
+    void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+    }
+
+    void Start()
+    {
+        if (StageManager.Instance != null)
+            StageManager.Instance.OnStageComplete += HandleStageComplete;
+    }
+
+    void HandleStageComplete()
+    {
+        Invoke(nameof(BeginTransition), delayBeforeLoad);
+    }
+
+    void BeginTransition()
+    {
+        int currentIndex = SceneManager.GetActiveScene().buildIndex;
+        int nextIndex = currentIndex + 1;
+
+        string label = (nextIndex == winSceneBuildIndex) ? "Complete!" : $"Stage {nextIndex}";
+        LoadSceneWithFade(nextIndex, label);
+    }
+
+    public void ReturnToMainMenu()
+    {
+        HUDManager.Instance?.ResetScore();
+        LoadSceneWithFade(mainMenuBuildIndex, null);
+    }
+
+    public void LoadSceneWithFade(int sceneIndex, string label)
+    {
+        if (IsTransitioning)
+        {
+            Debug.LogWarning($"StageFlowManager: ignoring LoadSceneWithFade({sceneIndex}), a transition is already running.");
+            return;
+        }
+
+        StartCoroutine(TransitionRoutine(sceneIndex, label));
+    }
+
+    IEnumerator TransitionRoutine(int sceneIndex, string label)
+    {
+        if (sceneIndex >= SceneManager.sceneCountInBuildSettings)
+        {
+            Debug.LogWarning($"StageFlowManager: scene index {sceneIndex} out of range.");
+            yield break;
+        }
+
+        IsTransitioning = true;
+
+        HUDManager.Instance?.HideHUD();
+
+        if (fadeController != null)
+        {
+            if (!string.IsNullOrEmpty(label))
+                fadeController.SetStageText(label);
+            else
+                fadeController.HideStageText();
+
+            yield return fadeController.FadeOut();
+        }
+
+        pendingFadeIn = true;
+        SceneManager.LoadScene(sceneIndex);
+    }
+
+    void OnEnable()
+    {
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
+    void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+    }
+
+    void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        StartCoroutine(SubscribeWhenReady());
+
+        if (pendingFadeIn)
+        {
+            pendingFadeIn = false;
+            StartCoroutine(FadeInAfterLoad(scene.buildIndex));
+        }
+        else
+        {
+            IsTransitioning = false;
+        }
+    }
+
+    IEnumerator SubscribeWhenReady()
+    {
+        // Main Menu and Win scenes have no StageManager: wait briefly, then give up quietly
+        float timeout = 2f;
+        float elapsed = 0f;
+
+        while (StageManager.Instance == null && elapsed < timeout)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            yield return null;
+        }
+
+        if (StageManager.Instance != null)
+            StageManager.Instance.OnStageComplete += HandleStageComplete;
+    }
+
+    IEnumerator FadeInAfterLoad(int loadedSceneIndex)
+    {
+        if (fadeController == null)
+        {
+            IsTransitioning = false;
+            yield break;
+        }
+
+        yield return null;
+        yield return new WaitForSecondsRealtime(delayAfterLoad);
+        yield return fadeController.FadeIn();
+
+        bool isGameplayScene = loadedSceneIndex != mainMenuBuildIndex && loadedSceneIndex != winSceneBuildIndex;
+        if (isGameplayScene)
+            HUDManager.Instance?.ShowHUD();
+        else
+            HUDManager.Instance?.HideHUD();
+
+        IsTransitioning = false;
+    }
+}
